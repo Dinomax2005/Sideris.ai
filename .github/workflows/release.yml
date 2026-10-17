@@ -118,8 +118,10 @@ jobs:
           # Keep the real wheel filename: pip rejects a wheel renamed to
           # something without version and platform tags.
           $Wheel = "llama_cpp_python-$env:LLAMA_VERSION-py3-none-win_amd64.whl"
-          curl.exe -L --fail -o $Wheel "https://github.com/abetlen/llama-cpp-python/releases/download/v$env:LLAMA_VERSION/$Wheel"
+          curl.exe -L --fail --retry 3 --retry-delay 2 -o $Wheel "https://github.com/abetlen/llama-cpp-python/releases/download/v$env:LLAMA_VERSION/$Wheel"
           if ($LASTEXITCODE -ne 0) { throw "llama.cpp wheel download failed ($LASTEXITCODE)" }
+          python -c "import sys, zipfile; bad = zipfile.ZipFile(sys.argv[1]).testzip(); sys.exit(1 if bad else 0)" $Wheel
+          if ($LASTEXITCODE -ne 0) { throw "downloaded llama.cpp wheel is corrupt" }
           python -m pip install $Wheel 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\build.log" -Append
           if ($LASTEXITCODE -ne 0) { throw "llama.cpp wheel install failed ($LASTEXITCODE)" }
           python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
@@ -199,7 +201,23 @@ jobs:
             # The arm64 llama.cpp wheel links libomp; Homebrew provides it.
             brew install libomp
             WHEEL="llama_cpp_python-${LLAMA_VERSION}-py3-none-macosx_11_0_arm64.whl"
-            curl -L --fail -o "$WHEEL" "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/${WHEEL}"
+            # A truncated or corrupted wheel makes pip die with a zlib error,
+            # so retry until the archive passes a full CRC check.
+            downloaded=0
+            for attempt in 1 2 3 4 5; do
+              rm -f "$WHEEL"
+              if curl -L --fail --retry 3 --retry-delay 2 -o "$WHEEL" "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/${WHEEL}" \
+                 && python -c "import sys, zipfile; bad = zipfile.ZipFile(sys.argv[1]).testzip(); sys.exit(1 if bad else 0)" "$WHEEL"; then
+                downloaded=1
+                break
+              fi
+              echo "llama.cpp wheel download attempt ${attempt} was not a valid wheel; retrying"
+              sleep 3
+            done
+            if [ "$downloaded" -ne 1 ]; then
+              echo "could not download a valid llama.cpp wheel after 5 attempts"
+              exit 1
+            fi
             python -m pip install "$WHEEL"
             python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
           }
@@ -272,7 +290,21 @@ jobs:
             python -m pip install --upgrade pip
             python -m pip install pyinstaller .
             WHEEL="llama_cpp_python-${LLAMA_VERSION}-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
-            curl -L --fail -o "$WHEEL" "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/${WHEEL}"
+            downloaded=0
+            for attempt in 1 2 3 4 5; do
+              rm -f "$WHEEL"
+              if curl -L --fail --retry 3 --retry-delay 2 -o "$WHEEL" "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/${WHEEL}" \
+                 && python -c "import sys, zipfile; bad = zipfile.ZipFile(sys.argv[1]).testzip(); sys.exit(1 if bad else 0)" "$WHEEL"; then
+                downloaded=1
+                break
+              fi
+              echo "llama.cpp wheel download attempt ${attempt} was not a valid wheel; retrying"
+              sleep 3
+            done
+            if [ "$downloaded" -ne 1 ]; then
+              echo "could not download a valid llama.cpp wheel after 5 attempts"
+              exit 1
+            fi
             python -m pip install "$WHEEL"
             python -c "import tkinter, llama_cpp; print('Tk', tkinter.TkVersion, 'llama_cpp', llama_cpp.__version__)"
           }
