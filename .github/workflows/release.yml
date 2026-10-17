@@ -56,6 +56,28 @@ jobs:
         run: |
           xvfb-run -a /usr/bin/python3 -c "import sys; sys.path.insert(0, '.'); from sideris_desktop.app import run_gui; raise SystemExit(run_gui(smoke=True))"
 
+      - name: Report test failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const log = path.join(process.env.RUNNER_TEMP || '/tmp', 'tests.log');
+            let tail = '';
+            try {
+              tail = fs.readFileSync(log, 'utf8').slice(-20000);
+            } catch (e) {
+              tail = 'could not read ' + log + ': ' + e;
+            }
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: '### Unit tests failed on ${{ matrix.os }}\n\n```text\n' +
+                    tail.replace(/```/g, '`` `') + '\n```',
+            });
+
   # ------------------------------------------------------------------------
   # Build the real installers
   # ------------------------------------------------------------------------
@@ -299,6 +321,31 @@ jobs:
           name: linux
           path: dist/*.tar.gz
           if-no-files-found: error
+
+      - name: Report build failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const tmp = process.env.RUNNER_TEMP || '/tmp';
+            let out = '';
+            for (const name of ['build.log', 'pyinstaller.log', 'selftest.json', 'gui-selftest.json']) {
+              const file = path.join(tmp, name);
+              try {
+                out += '\n\n### ' + name + '\n```text\n' +
+                       fs.readFileSync(file, 'utf8').slice(-12000) + '\n```';
+              } catch (e) {
+                out += '\n\n### ' + name + '\n_missing: ' + e.message + '_';
+              }
+            }
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: ('### Build failed on ${{ matrix.os }}' + out).replace(/```\n```/g, '```'),
+            });
 
   # ------------------------------------------------------------------------
   # Publish the release
