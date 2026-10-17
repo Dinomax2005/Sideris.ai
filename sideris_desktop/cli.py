@@ -63,7 +63,19 @@ LEVEL_CHOICES = list(LEVELS)
 # helpers
 # --------------------------------------------------------------------------
 def _print(message: str = "") -> None:
-    print(message, flush=True)
+    """Print to stdout when one exists.
+
+    The packaged Windows/macOS builds are windowed, so ``sys.stdout`` can
+    be ``None``.  CLI output is a courtesy there; it must never crash a
+    background service or a helper process.
+    """
+    stream = sys.stdout
+    if stream is None:
+        return
+    try:
+        print(message, file=stream, flush=True)
+    except Exception:
+        pass
 
 
 def _store(root=None) -> SettingsStore:

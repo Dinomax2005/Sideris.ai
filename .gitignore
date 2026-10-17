@@ -24,10 +24,13 @@ dist/
 /workspace/
 /.sideris/
 
-# Installer downloads
+# Installer downloads and build reports
 *.whl
 lc_win.whl
 lc_lin.whl
+selftest.json
+build.log
+pyinstaller.log
 
 # OS noise
 .DS_Store

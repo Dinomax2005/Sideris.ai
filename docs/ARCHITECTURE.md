@@ -291,10 +291,24 @@ heavy training packages are excluded: they belong in the opt-in private venv, no
 in a 300 MB installer. The Inno Setup script installs per-user with
 `PrivilegesRequired=lowest`.
 
-`.github/workflows/release.yml` runs 35 stdlib tests on Windows, macOS and Linux,
-then builds all three artifacts, smoke-tests the packaged GUI on Windows and
-Linux (Xvfb), and attaches the installer, macOS zip and Linux tarball to the
-GitHub Release via `softprops/action-gh-release@v2`.
+PyInstaller runs its entry script as `__main__`, without a package context, so
+the entry point is the tiny top-level `sideris_launcher.py` which imports
+`sideris_desktop.__main__`. Pointing PyInstaller at `sideris_desktop/__main__.py`
+directly would break every relative import inside it. A unit test runs the
+launcher as a bare script to keep that regression from coming back.
+
+Windowed Windows and macOS builds have no `sys.stdout`, so all packaged output
+goes through guarded writers, and `--selftest <path>` writes a JSON report
+(version, assets, Tk, app import, llama.cpp) instead of printing. It exits
+non-zero when a required piece is missing.
+
+`.github/workflows/release.yml` runs 39 stdlib tests on Windows, macOS and Linux,
+then builds all three artifacts, runs `--selftest` on every packaged binary,
+smoke-tests the packaged GUI on Windows and Linux (Xvfb), and attaches the
+installer, macOS zip and Linux tarball to the GitHub Release via
+`softprops/action-gh-release@v2`. Builds are split into one workflow step per
+phase (tools, PyInstaller, verify, package) so a failure names its phase, and the
+bash steps emit the tail of the failing log as a check-run annotation.
 
 ## Security posture and limits
 
