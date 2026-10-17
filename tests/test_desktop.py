@@ -727,7 +727,7 @@ class LauncherTests(EnvIsolation):
         self.assertEqual(payload["data_dir"], str(self.tmp))
 
     def test_selftest_report(self):
-        import importlib.util
+        import subprocess
 
         target = self.tmp / "reports" / "selftest.json"
         result = self._run("--selftest", str(target))
@@ -736,9 +736,12 @@ class LauncherTests(EnvIsolation):
         self.assertEqual(report["checks"]["version"], "Sideris 5.0.0")
         self.assertIn("assets", report["checks"])
         self.assertEqual(report["frozen"], False)
-        # tkinter is optional on a bare Linux development box; when it is
-        # available the report must be fully green.
-        if importlib.util.find_spec("tkinter") is not None:
+        # Some Linux Pythons ship a tkinter package that cannot load Tcl, so
+        # probe by really importing it rather than by looking for the folder.
+        tk = subprocess.run(
+            [sys.executable, "-c", "import tkinter"], capture_output=True, text=True
+        )
+        if tk.returncode == 0:
             self.assertTrue(report["ok"], report)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(report["checks"]["app"], "imported")
