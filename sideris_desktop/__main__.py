@@ -85,7 +85,9 @@ def _run_selftest(target: str) -> int:
     def tkinter_check() -> str:
         import tkinter
 
-        return f"Tk {tkinter.TkVersion}.{tkinter.TkPatchLevel}"
+        # TkVersion/TclVersion are the attributes Tkinter actually exposes;
+        # there is no TkPatchLevel.
+        return f"Tk {tkinter.TkVersion} / Tcl {tkinter.TclVersion}"
 
     def app_check() -> str:
         import sideris_desktop.app as app_module
