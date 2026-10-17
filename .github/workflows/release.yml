@@ -1,0 +1,198 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  LLAMA_VERSION: "0.3.36"
+  APP_VERSION: "5.0.0"
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk xvfb
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: GUI smoke test (Linux, Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a /usr/bin/python3 -c "import sys; sys.path.insert(0, '.'); from sideris_desktop.app import run_gui; raise SystemExit(run_gui(smoke=True))"
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: windows
+          - os: macos-14
+            artifact: macos
+          - os: ubuntu-22.04
+            artifact: linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ---------------------------------------------------------------- Windows
+      - name: Build Windows app and installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller .
+          curl.exe -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v$env:LLAMA_VERSION/llama_cpp_python-$env:LLAMA_VERSION-py3-none-win_amd64.whl"
+          python -m pip install llama_cpp_python.whl
+          python -c "import llama_cpp, sys; print('llama_cpp', llama_cpp.__version__)"
+          pyinstaller --noconfirm Luno.spec
+          choco install innosetup --yes --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\windows\SiderisSetup.iss
+          $process = Start-Process -FilePath "dist\Sideris\Sideris.exe" -ArgumentList "--smoke" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged GUI smoke test failed with exit code $($process.ExitCode)" }
+          Get-ChildItem dist\installer
+
+      - name: Upload Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/installer/*.exe
+          if-no-files-found: error
+
+      # ------------------------------------------------------------------ macOS
+      - name: Build macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller .
+          curl -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/llama_cpp_python-${LLAMA_VERSION}-py3-none-macosx_11_0_arm64.whl"
+          python -m pip install llama_cpp_python.whl
+          python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
+          pyinstaller --noconfirm Luno.spec
+          ./dist/Sideris.app/Contents/MacOS/Sideris --version
+          ditto -c -k --keepParent dist/Sideris.app "dist/Sideris-${APP_VERSION}-macos-arm64.zip"
+          ls -lh dist
+
+      - name: Upload macOS app
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.zip
+          if-no-files-found: error
+
+      # ------------------------------------------------------------------ Linux
+      - name: Build Linux app
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y python3-tk python3-venv xvfb
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller .
+          if ! python -c "import tkinter" 2>/dev/null; then
+            echo "setup-python lacks Tk; rebuilding inside a system-site-packages venv"
+            python3 -m venv --system-site-packages .buildvenv
+            source .buildvenv/bin/activate
+            python -m pip install --upgrade pip pyinstaller
+            python -m pip install .
+          fi
+          curl -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/llama_cpp_python-${LLAMA_VERSION}-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" || true
+          if [ -f llama_cpp_python.whl ]; then
+            python -m pip install llama_cpp_python.whl || echo "warning: llama_cpp wheel install failed; app will install it on demand"
+          fi
+          pyinstaller --noconfirm Luno.spec
+          tar -C dist -czf "dist/Sideris-${APP_VERSION}-linux-x86_64.tar.gz" Sideris
+          xvfb-run -a ./dist/Sideris/Sideris --smoke
+          ls -lh dist
+
+      - name: Upload Linux app
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Prepare release layout
+        run: |
+          mkdir -p dist/installer
+          shopt -s nullglob
+          exes=(dist/*.exe)
+          if [ ${#exes[@]} -gt 0 ]; then
+            mv "${exes[@]}" dist/installer/
+          fi
+          find dist -maxdepth 3 -type f -printf '%p  %s bytes\n'
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Sideris Desktop ${{ github.ref_name }}
+          body: |
+            **Sideris Desktop 5.0.0** - a private AI assistant that runs on your own computer.
+
+            * Windows: `Sideris-Setup-5.0.0.exe` (per-user install, no admin required)
+            * macOS (Apple silicon): `Sideris-5.0.0-macos-arm64.zip` - unzip, then drag `Sideris.app` to Applications
+            * Linux (x86_64): `Sideris-5.0.0-linux-x86_64.tar.gz` - extract and run `./Sideris/Sideris`
+
+            The installers include the llama.cpp inference runtime; the model itself is
+            downloaded from Hugging Face the first time you run setup, after you grant
+            the download permission. Nothing is sent to any cloud.
+
+            Honest note: Sideris uses small open-weight models (0.5B-14B). Fine-tuning
+            genuinely adapts them to your data, but they are not ChatGPT or Claude and
+            this project does not claim otherwise. Frontier models are trained in data
+            centres at a scale a laptop cannot reproduce.
+
+            Full details: https://github.com/Dinomax2005/Sideris.ai#readme
+          files: |
+            dist/installer/*.exe
+            dist/*.zip
+            dist/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
