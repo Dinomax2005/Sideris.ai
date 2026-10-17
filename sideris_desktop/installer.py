@@ -561,7 +561,23 @@ class Setup:
             python, "-m", "pip", "install", "--upgrade", "--target", str(package_dir),
             "--disable-pip-version-check", target,
         ]
-        self._run_streaming(command, timeout=1800)
+        try:
+            self._run_streaming(command, timeout=1800)
+        except StepFailed:
+            fallback = f"llama-cpp-python=={LLAMA_CPP_VERSION}"
+            if target == fallback:
+                raise
+            # A prebuilt wheel can be corrupt upstream (the 0.3.36 macOS
+            # arm64 asset is).  Fall back to a source build rather than
+            # leaving the user with no runtime at all.
+            self.log("Prebuilt wheel failed; trying a source build (this can take several minutes).")
+            self._run_streaming(
+                [
+                    python, "-m", "pip", "install", "--upgrade", "--target",
+                    str(package_dir), "--disable-pip-version-check", fallback,
+                ],
+                timeout=3600,
+            )
         activate_runtime(self.paths.root)
         if not inference_ready(self.paths.root):
             raise StepFailed(

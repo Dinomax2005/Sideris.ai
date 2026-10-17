@@ -200,25 +200,34 @@ jobs:
             python -m pip install pyinstaller .
             # The arm64 llama.cpp wheel links libomp; Homebrew provides it.
             brew install libomp
-            WHEEL="llama_cpp_python-${LLAMA_VERSION}-py3-none-macosx_11_0_arm64.whl"
-            # A truncated or corrupted wheel makes pip die with a zlib error,
-            # so retry until the archive passes a full CRC check.
-            downloaded=0
-            for attempt in 1 2 3 4 5; do
-              rm -f "$WHEEL"
-              if curl -L --fail --retry 3 --retry-delay 2 -o "$WHEEL" "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/${WHEEL}" \
-                 && python -c "import sys, zipfile; bad = zipfile.ZipFile(sys.argv[1]).testzip(); sys.exit(1 if bad else 0)" "$WHEEL"; then
-                downloaded=1
+            # The upstream 0.3.36 macos arm64 wheel is corrupt at the source
+            # (five identical downloads fail a CRC check), so try the other
+            # published builds and, if none survive verification, compile
+            # llama.cpp locally.  A broken archive must never reach the
+            # installer.
+            WHEEL=""
+            for candidate in \
+              "v${LLAMA_VERSION}/llama_cpp_python-${LLAMA_VERSION}-py3-none-macosx_11_0_arm64.whl" \
+              "v${LLAMA_VERSION}-metal/llama_cpp_python-${LLAMA_VERSION}-py3-none-macosx_11_0_arm64.whl" \
+              "v0.3.35/llama_cpp_python-0.3.35-py3-none-macosx_11_0_arm64.whl" \
+              "v0.3.35-metal/llama_cpp_python-0.3.35-py3-none-macosx_11_0_arm64.whl"; do
+              name="${candidate##*/}"
+              rm -f "$name"
+              if curl -L --fail --retry 3 --retry-delay 2 -o "$name" "https://github.com/abetlen/llama-cpp-python/releases/download/${candidate}" \
+                 && python -c "import sys, zipfile; bad = zipfile.ZipFile(sys.argv[1]).testzip(); sys.exit(1 if bad else 0)" "$name"; then
+                WHEEL="$name"
+                echo "using verified llama.cpp wheel ${candidate}"
                 break
               fi
-              echo "llama.cpp wheel download attempt ${attempt} was not a valid wheel; retrying"
-              sleep 3
+              echo "not usable: ${candidate}"
             done
-            if [ "$downloaded" -ne 1 ]; then
-              echo "could not download a valid llama.cpp wheel after 5 attempts"
-              exit 1
+            if [ -n "$WHEEL" ]; then
+              python -m pip install "$WHEEL"
+            else
+              echo "::warning::No prebuilt macOS wheel passed verification; building llama.cpp from source"
+              export CMAKE_ARGS="-DGGML_METAL=on"
+              python -m pip install --no-cache-dir --no-binary=llama-cpp-python "llama-cpp-python==${LLAMA_VERSION}"
             fi
-            python -m pip install "$WHEEL"
             python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
           }
           build 2>&1 | tee "$LOG"
