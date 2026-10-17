@@ -115,9 +115,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed ($LASTEXITCODE)" }
           python -m pip install pyinstaller .
           if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller . failed ($LASTEXITCODE)" }
-          curl.exe -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v$env:LLAMA_VERSION/llama_cpp_python-$env:LLAMA_VERSION-py3-none-win_amd64.whl"
+          # Keep the real wheel filename: pip rejects a wheel renamed to
+          # something without version and platform tags.
+          $Wheel = "llama_cpp_python-$env:LLAMA_VERSION-py3-none-win_amd64.whl"
+          curl.exe -L --fail -o $Wheel "https://github.com/abetlen/llama-cpp-python/releases/download/v$env:LLAMA_VERSION/$Wheel"
           if ($LASTEXITCODE -ne 0) { throw "llama.cpp wheel download failed ($LASTEXITCODE)" }
-          python -m pip install llama_cpp_python.whl
+          python -m pip install $Wheel 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\build.log" -Append
           if ($LASTEXITCODE -ne 0) { throw "llama.cpp wheel install failed ($LASTEXITCODE)" }
           python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
           if ($LASTEXITCODE -ne 0) { throw "llama.cpp import failed ($LASTEXITCODE)" }
@@ -195,8 +198,9 @@ jobs:
             python -m pip install pyinstaller .
             # The arm64 llama.cpp wheel links libomp; Homebrew provides it.
             brew install libomp
-            curl -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/llama_cpp_python-${LLAMA_VERSION}-py3-none-macosx_11_0_arm64.whl"
-            python -m pip install llama_cpp_python.whl
+            WHEEL="llama_cpp_python-${LLAMA_VERSION}-py3-none-macosx_11_0_arm64.whl"
+            curl -L --fail -o "$WHEEL" "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/${WHEEL}"
+            python -m pip install "$WHEEL"
             python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
           }
           build 2>&1 | tee "$LOG"
@@ -267,8 +271,9 @@ jobs:
             source .buildvenv/bin/activate
             python -m pip install --upgrade pip
             python -m pip install pyinstaller .
-            curl -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/llama_cpp_python-${LLAMA_VERSION}-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
-            python -m pip install llama_cpp_python.whl
+            WHEEL="llama_cpp_python-${LLAMA_VERSION}-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+            curl -L --fail -o "$WHEEL" "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/${WHEEL}"
+            python -m pip install "$WHEEL"
             python -c "import tkinter, llama_cpp; print('Tk', tkinter.TkVersion, 'llama_cpp', llama_cpp.__version__)"
           }
           build 2>&1 | tee "$LOG"
