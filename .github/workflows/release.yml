@@ -39,7 +39,17 @@ jobs:
           sudo apt-get install -y python3-tk xvfb
 
       - name: Unit tests
-        run: python -m unittest discover -s tests -v
+        shell: bash
+        run: |
+          set -o pipefail
+          LOG="${RUNNER_TEMP:-/tmp}/tests.log"
+          python -m unittest discover -s tests -v 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            tail -c 2500 "$LOG" | tr '\n' '\r' | sed 's/\r/%0A/g' | sed 's/^/::error::unit test failure tail: /'
+            echo
+            exit "$status"
+          fi
 
       - name: GUI smoke test (Linux, Xvfb)
         if: runner.os == 'Linux'
