@@ -17,6 +17,7 @@ import os
 import platform
 import queue
 import re
+import sys
 import threading
 import time
 import tkinter as tk
@@ -2346,12 +2347,19 @@ def run_gui(page: str = "chat", *, smoke: bool = False) -> int:
     try:
         root = tk.Tk()
     except tk.TclError as exc:
-        print(
+        message = (
             "Sideris could not open a window. This usually means Tk is not available "
             f"or there is no display ({exc}).\n"
             "On Linux install the Tk package (for example python3-tk), or use "
             "'sideris chat' in a terminal."
         )
+        stream = sys.stderr if sys.stderr is not None else sys.stdout
+        if stream is not None:
+            try:
+                stream.write(message + "\n")
+                stream.flush()
+            except Exception:
+                pass
         return 2
     try:
         activate_runtime()

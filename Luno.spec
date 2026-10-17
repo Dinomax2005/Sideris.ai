@@ -51,6 +51,8 @@ for name in ("logo.png", "logo-256.png", "sideris.ico", "sideris.icns"):
 
 for path in sorted((ROOT / "sideris_desktop").glob("*.py")):
     datas.append((str(path), "sideris_source/sideris_desktop"))
+if (ROOT / "sideris_launcher.py").is_file():
+    datas.append((str(ROOT / "sideris_launcher.py"), "sideris_source"))
 for extra in ("pyproject.toml", "README.md", "LICENSE"):
     path = ROOT / extra
     if path.is_file():
@@ -65,6 +67,9 @@ try:
     datas += lc_datas
     binaries += lc_binaries
     hiddenimports += lc_hidden
+    # llama_cpp imports these at runtime; name them explicitly so a late
+    # import can never fail inside the frozen app.
+    hiddenimports += ["diskcache", "jinja2", "numpy", "typing_extensions"]
 except Exception as exc:  # pragma: no cover - build environment dependent
     print(f"[Luno.spec] llama_cpp not bundled: {exc}")
 
@@ -80,8 +85,11 @@ icon = str(ROOT / "assets" / ("sideris.ico" if sys.platform == "win32" else "sid
 if sys.platform.startswith("linux"):
     icon = str(ROOT / "assets" / "logo-256.png")
 
+# ``sideris_launcher.py`` imports the package instead of executing
+# ``sideris_desktop/__main__.py`` as a bare script, which would break its
+# relative imports inside the frozen app.
 a = Analysis(
-    [str(ROOT / "sideris_desktop" / "__main__.py")],
+    [str(ROOT / "sideris_launcher.py")],
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,

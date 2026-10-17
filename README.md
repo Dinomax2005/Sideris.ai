@@ -33,6 +33,16 @@ The installers include the **llama.cpp** inference runtime. The model itself is 
 separate download (0.4-9 GB) that happens the first time you finish setup, and only
 after you grant the download permission.
 
+The builds are not code-signed (code-signing certificates cost money), so:
+
+* **Windows** may show a SmartScreen prompt. Choose **More info → Run anyway**.
+* **macOS** may say the app is from an unidentified developer. Right-click
+  `Sideris.app` → **Open**, or run
+  `xattr -dr com.apple.quarantine /Applications/Sideris.app` once.
+
+Every packaged binary in the release is self-tested before upload: it proves Tk,
+the app package, the icons and the bundled llama.cpp runtime all import.
+
 ### First run
 
 1. Open Sideris.
@@ -256,20 +266,28 @@ answer. Training endpoints return **403** while the training permission is off.
 ```bash
 git clone https://github.com/Dinomax2005/Sideris.ai.git
 cd Sideris.ai
-python -m unittest discover -s tests -v     # 35 stdlib tests
+python -m unittest discover -s tests -v     # 39 stdlib tests
 python -m sideris_desktop                    # open the window
 ```
 
-On Linux you need Tk: `sudo apt install python3-tk`. On Debian/Ubuntu, install with
+On Linux you need Tk and the shared Python runtime PyInstaller links against:
+`sudo apt install python3-tk python3-venv libpython3.10` (use `libpython3.X` for
+your interpreter). On Debian/Ubuntu you can install Sideris with
 `./installer/install.sh` (per-user, no sudo). The installers are built with
 PyInstaller and, on Windows, Inno Setup:
 
 ```bash
 pip install pyinstaller .
 pyinstaller --noconfirm Luno.spec
+# prove the packaged app imports Tk, the app and llama.cpp, without a display:
+./dist/Sideris/SiderisCLI --selftest selftest.json   # Windows: dist\Sideris\Sideris.exe --selftest
 # Windows installer:
 ISCC installer/windows/SiderisSetup.iss
 ```
+
+`--selftest` is what the release workflow runs on every packaged binary before it
+publishes anything. It writes a JSON report and exits non-zero if Tk, the app
+package, the assets or the bundled inference runtime are missing.
 
 Icons are derived from the original artwork, never redrawn:
 

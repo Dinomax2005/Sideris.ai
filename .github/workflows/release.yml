@@ -14,9 +14,13 @@ env:
   APP_VERSION: "5.0.0"
 
 jobs:
+  # ------------------------------------------------------------------------
+  # Unit tests + a real window on Linux (Xvfb)
+  # ------------------------------------------------------------------------
   test:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -42,10 +46,14 @@ jobs:
         run: |
           xvfb-run -a /usr/bin/python3 -c "import sys; sys.path.insert(0, '.'); from sideris_desktop.app import run_gui; raise SystemExit(run_gui(smoke=True))"
 
+  # ------------------------------------------------------------------------
+  # Build the real installers
+  # ------------------------------------------------------------------------
   build:
     name: Build (${{ matrix.os }})
     needs: test
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -63,22 +71,75 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ---------------------------------------------------------------- Windows
-      - name: Build Windows app and installer
+      # ------------------------------------------------------------ Windows
+      # Each phase is its own step so a failure names the phase even when
+      # the raw job log is not readable from the automation that watches it.
+      - name: Install build tools (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed ($LASTEXITCODE)" }
           python -m pip install pyinstaller .
+          if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller . failed ($LASTEXITCODE)" }
           curl.exe -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v$env:LLAMA_VERSION/llama_cpp_python-$env:LLAMA_VERSION-py3-none-win_amd64.whl"
+          if ($LASTEXITCODE -ne 0) { throw "llama.cpp wheel download failed ($LASTEXITCODE)" }
           python -m pip install llama_cpp_python.whl
-          python -c "import llama_cpp, sys; print('llama_cpp', llama_cpp.__version__)"
-          pyinstaller --noconfirm Luno.spec
+          if ($LASTEXITCODE -ne 0) { throw "llama.cpp wheel install failed ($LASTEXITCODE)" }
+          python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
+          if ($LASTEXITCODE -ne 0) { throw "llama.cpp import failed ($LASTEXITCODE)" }
+
+      - name: Build app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pyinstaller --noconfirm Luno.spec 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\pyinstaller.log"
+          $status = $LASTEXITCODE
+          if ($status -ne 0) {
+            $tail = (Get-Content "$env:RUNNER_TEMP\pyinstaller.log" -Tail 15 -ErrorAction SilentlyContinue | Out-String)
+            Write-Host "::error::PyInstaller failed ($status): $tail"
+            throw "PyInstaller failed ($status)"
+          }
+          if (!(Test-Path "dist\Sideris\Sideris.exe")) { throw "Sideris.exe was not produced" }
+          if (!(Test-Path "dist\Sideris\SiderisCLI.exe")) { throw "SiderisCLI.exe was not produced" }
+          Get-ChildItem dist\Sideris | Select-Object Name, Length
+
+      - name: Verify packaged app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Headless proof that the packed bundle imports Tk, the app and llama.cpp.
+          & "dist\Sideris\SiderisCLI.exe" --selftest "$env:RUNNER_TEMP\selftest.json"
+          if ($LASTEXITCODE -ne 0) { throw "Packaged self-test failed with exit code $LASTEXITCODE" }
+          Get-Content "$env:RUNNER_TEMP\selftest.json"
+
+          # Real window test through the console binary, with a hard time limit
+          # so a modal crash dialog can never hang the runner.
+          $proc = Start-Process -FilePath "dist\Sideris\SiderisCLI.exe" -ArgumentList "--smoke" -PassThru -NoNewWindow
+          if (-not $proc.WaitForExit(180000)) { $proc.Kill(); throw "GUI smoke test timed out" }
+          if ($proc.ExitCode -ne 0) { throw "GUI smoke test failed with exit code $($proc.ExitCode)" }
+
+          # The windowed executable must also boot; it reports through a file
+          # because a windowed build has no stdout.
+          $gui = Start-Process -FilePath "dist\Sideris\Sideris.exe" -ArgumentList "--selftest","$env:RUNNER_TEMP\gui-selftest.json" -PassThru
+          if (-not $gui.WaitForExit(180000)) { $gui.Kill(); throw "Windowed self-test timed out" }
+          if ($gui.ExitCode -ne 0) { throw "Windowed self-test failed with exit code $($gui.ExitCode)" }
+          Get-Content "$env:RUNNER_TEMP\gui-selftest.json"
+
+      - name: Build installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
           choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed ($LASTEXITCODE)" }
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\windows\SiderisSetup.iss
-          $process = Start-Process -FilePath "dist\Sideris\Sideris.exe" -ArgumentList "--smoke" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Packaged GUI smoke test failed with exit code $($process.ExitCode)" }
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)" }
+          if (!(Test-Path "dist\installer\Sideris-Setup-5.0.0.exe")) { throw "Inno Setup produced no installer" }
           Get-ChildItem dist\installer
 
       - name: Upload Windows installer
@@ -89,19 +150,61 @@ jobs:
           path: dist/installer/*.exe
           if-no-files-found: error
 
-      # ------------------------------------------------------------------ macOS
-      - name: Build macOS app
+      # -------------------------------------------------------------- macOS
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -o pipefail
+          LOG="${RUNNER_TEMP:-/tmp}/build.log"
+          build() {
+            set -euo pipefail
+            python -m pip install --upgrade pip
+            python -m pip install pyinstaller .
+            # The arm64 llama.cpp wheel links libomp; Homebrew provides it.
+            brew install libomp
+            curl -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/llama_cpp_python-${LLAMA_VERSION}-py3-none-macosx_11_0_arm64.whl"
+            python -m pip install llama_cpp_python.whl
+            python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
+          }
+          build 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            tail -c 1800 "$LOG" | tr '\n' '\r' | sed 's/\r/%0A/g' | sed 's/^/::error::build log tail: /'
+            echo
+            exit "$status"
+          fi
+
+      - name: Build app (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -o pipefail
+          LOG="${RUNNER_TEMP:-/tmp}/pyinstaller.log"
+          pyinstaller --noconfirm Luno.spec 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            tail -c 1800 "$LOG" | tr '\n' '\r' | sed 's/\r/%0A/g' | sed 's/^/::error::pyinstaller log tail: /'
+            echo
+            exit "$status"
+          fi
+          test -x "./dist/Sideris.app/Contents/MacOS/Sideris"
+          ls -lh dist
+
+      - name: Verify packaged app (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install pyinstaller .
-          curl -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/llama_cpp_python-${LLAMA_VERSION}-py3-none-macosx_11_0_arm64.whl"
-          python -m pip install llama_cpp_python.whl
-          python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
-          pyinstaller --noconfirm Luno.spec
-          ./dist/Sideris.app/Contents/MacOS/Sideris --version
+          ./dist/Sideris.app/Contents/MacOS/Sideris --selftest "$PWD/selftest.json"
+          cat selftest.json
+          python -c "import json; report = json.load(open('selftest.json', encoding='utf-8')); assert report['ok'], report; assert report['checks'].get('llama_cpp'), report; assert report['checks'].get('app') == 'imported', report; print('packaged macOS self-test passed')"
+
+      - name: Package app (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
           ditto -c -k --keepParent dist/Sideris.app "dist/Sideris-${APP_VERSION}-macos-arm64.zip"
           ls -lh dist
 
@@ -113,30 +216,70 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
-      # ------------------------------------------------------------------ Linux
-      - name: Build Linux app
+      # -------------------------------------------------------------- Linux
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -o pipefail
+          LOG="${RUNNER_TEMP:-/tmp}/build.log"
+          build() {
+            set -euo pipefail
+            sudo apt-get update
+            # libpython3.10 provides the shared runtime PyInstaller links
+            # against; python3-tk provides the Tk that setup-python lacks.
+            sudo apt-get install -y python3-tk python3-venv libpython3.10 xvfb
+            /usr/bin/python3 --version
+            /usr/bin/python3 -c "import tkinter; print('Tk', tkinter.TkVersion)"
+            /usr/bin/python3 -m venv .buildvenv
+            source .buildvenv/bin/activate
+            python -m pip install --upgrade pip
+            python -m pip install pyinstaller .
+            curl -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/llama_cpp_python-${LLAMA_VERSION}-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+            python -m pip install llama_cpp_python.whl
+            python -c "import tkinter, llama_cpp; print('Tk', tkinter.TkVersion, 'llama_cpp', llama_cpp.__version__)"
+          }
+          build 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            tail -c 1800 "$LOG" | tr '\n' '\r' | sed 's/\r/%0A/g' | sed 's/^/::error::build log tail: /'
+            echo
+            exit "$status"
+          fi
+
+      - name: Build app (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -o pipefail
+          LOG="${RUNNER_TEMP:-/tmp}/pyinstaller.log"
+          source .buildvenv/bin/activate
+          pyinstaller --noconfirm Luno.spec 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            tail -c 1800 "$LOG" | tr '\n' '\r' | sed 's/\r/%0A/g' | sed 's/^/::error::pyinstaller log tail: /'
+            echo
+            exit "$status"
+          fi
+          test -x ./dist/Sideris/SiderisCLI
+          ls -lh dist
+
+      - name: Verify packaged app (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y python3-tk python3-venv xvfb
-          python -m pip install --upgrade pip
-          python -m pip install pyinstaller .
-          if ! python -c "import tkinter" 2>/dev/null; then
-            echo "setup-python lacks Tk; rebuilding inside a system-site-packages venv"
-            python3 -m venv --system-site-packages .buildvenv
-            source .buildvenv/bin/activate
-            python -m pip install --upgrade pip pyinstaller
-            python -m pip install .
-          fi
-          curl -L --fail -o llama_cpp_python.whl "https://github.com/abetlen/llama-cpp-python/releases/download/v${LLAMA_VERSION}/llama_cpp_python-${LLAMA_VERSION}-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" || true
-          if [ -f llama_cpp_python.whl ]; then
-            python -m pip install llama_cpp_python.whl || echo "warning: llama_cpp wheel install failed; app will install it on demand"
-          fi
-          pyinstaller --noconfirm Luno.spec
+          ./dist/Sideris/SiderisCLI --selftest selftest.json
+          cat selftest.json
+          python -c "import json; report = json.load(open('selftest.json', encoding='utf-8')); assert report['ok'], report; assert report['checks'].get('llama_cpp'), report; print('packaged Linux self-test passed')"
+          xvfb-run -a ./dist/Sideris/SiderisCLI --smoke
+
+      - name: Package app (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
           tar -C dist -czf "dist/Sideris-${APP_VERSION}-linux-x86_64.tar.gz" Sideris
-          xvfb-run -a ./dist/Sideris/Sideris --smoke
           ls -lh dist
 
       - name: Upload Linux app
@@ -147,6 +290,9 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  # ------------------------------------------------------------------------
+  # Publish the release
+  # ------------------------------------------------------------------------
   release:
     name: Publish GitHub Release
     needs: build
@@ -180,7 +326,7 @@ jobs:
             * macOS (Apple silicon): `Sideris-5.0.0-macos-arm64.zip` - unzip, then drag `Sideris.app` to Applications
             * Linux (x86_64): `Sideris-5.0.0-linux-x86_64.tar.gz` - extract and run `./Sideris/Sideris`
 
-            The installers include the llama.cpp inference runtime; the model itself is
+            The packages include the llama.cpp inference runtime; the model itself is
             downloaded from Hugging Face the first time you run setup, after you grant
             the download permission. Nothing is sent to any cloud.
 

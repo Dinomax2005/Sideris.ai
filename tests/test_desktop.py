@@ -690,5 +690,69 @@ class CliTests(EnvIsolation):
         self.assertIn("qwen2.5-1.5b", buffer.getvalue())
 
 
+# --------------------------------------------------------------------------
+# packaged entry point
+# --------------------------------------------------------------------------
+class LauncherTests(EnvIsolation):
+    """The frozen build runs a script as ``__main__``.
+
+    PyInstaller executes its entry script without a package context.  These
+    tests run ``sideris_launcher.py`` exactly that way, so a regression to
+    "point PyInstaller at sideris_desktop/__main__.py" fails here instead of
+    silently producing installers that crash on launch.
+    """
+
+    def _run(self, *args: str, timeout: float = 60.0):
+        import subprocess
+
+        return subprocess.run(
+            [sys.executable, str(ROOT / "sideris_launcher.py"), *args],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={**os.environ, "SIDERIS_HOME": str(self.tmp)},
+        )
+
+    def test_launcher_reports_version_as_a_bare_script(self):
+        result = self._run("--version")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "Sideris 5.0.0")
+
+    def test_launcher_status_works_as_a_bare_script(self):
+        result = self._run("status", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["version"], "5.0.0")
+        self.assertEqual(payload["data_dir"], str(self.tmp))
+
+    def test_selftest_report(self):
+        import importlib.util
+
+        target = self.tmp / "reports" / "selftest.json"
+        result = self._run("--selftest", str(target))
+        self.assertTrue(target.is_file(), result.stderr)
+        report = read_json(target)
+        self.assertEqual(report["checks"]["version"], "Sideris 5.0.0")
+        self.assertIn("assets", report["checks"])
+        self.assertEqual(report["frozen"], False)
+        # tkinter is optional on a bare Linux development box; when it is
+        # available the report must be fully green.
+        if importlib.util.find_spec("tkinter") is not None:
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(report["checks"]["app"], "imported")
+        else:
+            self.assertIsNone(report["checks"]["tkinter"])
+            self.assertEqual(result.returncode, 1)
+
+    def test_print_does_not_crash_without_stdout(self):
+        from sideris_desktop.cli import _print
+
+        with mock.patch.object(sys, "stdout", None):
+            _print("nobody is listening")  # must not raise
+
+
+
 if __name__ == "__main__":
     unittest.main()
